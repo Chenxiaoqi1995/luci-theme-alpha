@@ -23,8 +23,6 @@ jobs:
           [ -f /etc/issue.net ] && cat /etc/issue.net
           [ -f /etc/issue ] && cat /etc/issue
           ulimit -a
-          # 安装编译依赖（避免缺失库导致失败）
-          sudo apt update && sudo apt install -y build-essential libncurses5-dev libncursesw5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget unzip python3
 
       - name: Download SDK
         run: |
@@ -37,36 +35,21 @@ jobs:
         id: build
         run: | 
           cd openwrt-sdk
-          # 清理旧目录（避免缓存冲突）
-          rm -rf package/luci-theme-alpha
-          # 克隆仓库并检出 3.9.7 标签（创建临时分支避免分离头指针）
-          git clone https://github.com/derisamedia/luci-theme-alpha.git package/luci-theme-alpha || { echo "仓库克隆失败"; exit 1; }
-          cd package/luci-theme-alpha
-          # 检出标签并创建临时分支，同时校验标签是否存在
-          git checkout 3.9.7 -b temp-tag-3.9.7 || { echo "3.9.7 标签不存在，请检查标签名称"; exit 1; }
-          # 验证当前检出版本是否为目标标签（双重保障）
-          if [ "$(git describe --tags)" != "3.9.7" ]; then
-            echo "检出标签不匹配，当前实际标签：$(git describe --tags)"; exit 1;
-          fi
-          cd ../../
-          
-          # 更新依赖并安装
-          ./scripts/feeds update -a && ./scripts/feeds install -a || { echo "feeds 依赖更新失败"; exit 1; }
+          # 替换为 luci-theme-alpha 仓库及 3.9.7 分支
+          git clone --depth=1 -b 3.9.7 https://github.com/derisamedia/luci-theme-alpha.git package/luci-theme-alpha
+          ./scripts/feeds update -a && ./scripts/feeds install -a
           # 启用目标主题包编译
           echo "CONFIG_PACKAGE_luci-theme-alpha=y" >> .config
-          # 生成默认配置
-          make defconfig || { echo "配置文件生成失败"; exit 1; }
-          # 编译主题包（降低并行度避免内存溢出，保留详细日志）
-          make package/luci-theme-alpha/compile V=s -j$(($(nproc)/2)) || { echo "编译失败，请查看详细日志"; exit 1; }
-          # 精准查找编译产物（适配 OpenWRT 23.05 SDK 目录结构）
-          TARGET=$(find bin/packages/armv8/ -name 'luci-theme-alpha_*.ipk' | head -n 1)
-          if [ -z "$TARGET" ]; then
-            echo "未找到编译产物，可能编译失败或路径错误"; exit 1;
-          fi
-          echo "成功找到编译产物：$TARGET"
+          make defconfig
+          # 编译指定主题包
+          make package/luci-theme-alpha/compile V=s -j$(nproc)
+          # 查找编译产物（适配 ipk 包命名规则）
+          TARGET="$(find bin/packages/ -name 'luci-theme-alpha_*.ipk' | head -n 1)"
+          echo "TARGET=$(pwd)/$TARGET"
           echo "TARGET=$(pwd)/$TARGET" >> $GITHUB_OUTPUT
           echo "status=success" >> $GITHUB_OUTPUT
 
+      # 仅在 Tag 触发时获取 Tag 信息
       - name: Get tag
         id: tag
         if: startsWith(github.ref, 'refs/tags/')
@@ -74,12 +57,14 @@ jobs:
         with:
           strip_v: false
 
+      # 非 Tag 触发时手动设置版本号（避免 Release 失败）
       - name: Set manual version
         id: manual_version
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: |
           echo "tag=dev-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
 
+      # 上传 Release：Tag 触发用 Tag 名，非 Tag 触发用手动版本号
       - name: Upload to release
         uses: softprops/action-gh-release@v1
         if: steps.build.outputs.status == 'success' && !cancelled()
